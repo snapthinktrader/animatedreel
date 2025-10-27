@@ -80,16 +80,29 @@ class PexelsMediaFetcher:
             for video in videos:
                 video_files = video.get('video_files', [])
                 
+                # MEMORY OPTIMIZATION: Prefer SMALLER video files for 512 MB RAM
+                # Sort by file size (prefer SD quality over HD/4K)
+                video_files_sorted = sorted(
+                    video_files,
+                    key=lambda vf: (
+                        abs((vf.get('width', 0) / max(vf.get('height', 1), 1)) - 0.5625),  # Prefer 9:16 ratio
+                        vf.get('width', 9999) * vf.get('height', 9999)  # Prefer smaller resolution
+                    )
+                )
+                
                 # Find portrait/vertical video (9:16 ratio preferred for reels)
                 portrait_video = None
-                for vf in video_files:
-                    if vf.get('width', 0) < vf.get('height', 0):  # Portrait orientation
+                for vf in video_files_sorted:
+                    width = vf.get('width', 0)
+                    height = vf.get('height', 1)
+                    # Prefer SD or low-HD (smaller files)
+                    if width < vf.get('height', 1) and width <= 720:  # Max 720p width
                         portrait_video = vf
                         break
                 
-                # Fallback to first available video
-                if not portrait_video and video_files:
-                    portrait_video = video_files[0]
+                # Fallback to smallest available video
+                if not portrait_video and video_files_sorted:
+                    portrait_video = video_files_sorted[0]
                 
                 if portrait_video:
                     video_list.append({
@@ -188,14 +201,32 @@ class PexelsMediaFetcher:
                 logger.error(f"❌ Download failed: {response.status_code}")
                 return None
             
+            # MEMORY OPTIMIZATION: Check file size before downloading completely
+            content_length = response.headers.get('content-length')
+            if content_length:
+                size_mb = int(content_length) / (1024 * 1024)
+                if media_type == 'video' and size_mb > 15:  # Skip videos larger than 15 MB
+                    logger.warning(f"⚠️ Skipping {media_type}: {size_mb:.2f} MB (too large for 512 MB RAM)")
+                    return None
+            
             # Save to temp file
             suffix = '.mp4' if media_type == 'video' else '.jpg'
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             
-            # Download in chunks
+            # Download in chunks with size limit
+            downloaded = 0
+            max_size = 20 * 1024 * 1024  # 20 MB max
+            
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     temp_file.write(chunk)
+                    downloaded += len(chunk)
+                    # MEMORY OPTIMIZATION: Abort if file too large
+                    if downloaded > max_size:
+                        temp_file.close()
+                        os.unlink(temp_file.name)
+                        logger.warning(f"⚠️ Aborted download: exceeded 20 MB limit")
+                        return None
             
             temp_file.close()
             

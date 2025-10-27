@@ -134,13 +134,16 @@ class AnimatedReelCreator:
             # Shuffle for variety and limit to desired number of clips
             import random
             random.shuffle(all_media)
-            all_media = all_media[:clips_count]
+            
+            # MEMORY OPTIMIZATION: Limit to 3 clips max for 512 MB RAM
+            max_clips = min(3, clips_count)  # Force maximum of 3 clips
+            all_media = all_media[:max_clips]
             
             if not all_media:
                 logger.error("❌ No media found on Pexels or Google Images, falling back to static image")
                 return None
             
-            logger.info(f"✅ Found {len(all_media)} media clips:")
+            logger.info(f"✅ Found {len(all_media)} media clips (max {max_clips} for memory optimization):")
             logger.info(f"   - Videos: {sum(1 for m in all_media if m['type'] == 'video')}")
             logger.info(f"   - Photos (Pexels): {sum(1 for m in all_media if m['type'] == 'photo' and m['source'] == 'pexels')}")
             logger.info(f"   - Photos (Google): {sum(1 for m in all_media if m['type'] == 'photo' and m['source'] == 'google_images')}")
