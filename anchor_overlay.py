@@ -198,7 +198,7 @@ class AnchorOverlaySystem:
         x_position = 20  # Left side with 20px margin
         y_position = headline_height + 20  # Below headline
         
-        overlay_clip = overlay_clip.with_position((x_position, y_position))
+        overlay_clip = overlay_clip.set_position((x_position, y_position))
         
         # Composite video with overlay
         final_clip = CompositeVideoClip([video_clip, overlay_clip])

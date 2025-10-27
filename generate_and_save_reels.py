@@ -12,6 +12,15 @@ import logging
 import requests
 from datetime import datetime
 import psycopg2
+
+# FIX: Pillow 10.0+ compatibility - patch BEFORE importing MoviePy
+try:
+    from PIL import Image
+    if not hasattr(Image, 'ANTIALIAS'):
+        Image.ANTIALIAS = Image.LANCZOS
+except:
+    pass
+
 from animated_reel_creator import AnimatedReelCreator
 from google_tts_voice import GoogleTTSVoice
 

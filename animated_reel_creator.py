@@ -6,7 +6,20 @@ Creates dynamic presentation-style reels using Pexels videos/photos and Google I
 import os
 import tempfile
 import logging
+import gc  # For garbage collection
 from typing import List, Optional
+
+# FIX: Pillow 10.0+ removed ANTIALIAS, MoviePy 1.0.3 still uses it
+# Monkey-patch PIL.Image to add ANTIALIAS back as LANCZOS
+try:
+    from PIL import Image
+    if not hasattr(Image, 'ANTIALIAS'):
+        Image.ANTIALIAS = Image.LANCZOS
+        logger = logging.getLogger(__name__)
+        logger.info("✅ Patched PIL.Image.ANTIALIAS for MoviePy compatibility")
+except Exception as e:
+    pass
+
 from pexels_video_fetcher import PexelsMediaFetcher
 from google_photos_fetcher import GoogleImageSearchFetcher
 from anchor_overlay import AnchorOverlaySystem
@@ -28,7 +41,7 @@ class AnimatedReelCreator:
         commentary: str,
         voice_audio_path: Optional[str] = None,
         target_duration: int = 30,
-        clips_count: int = 6,  # Increased from 3 to 6 for more clips
+        clips_count: int = 4,  # REDUCED from 6 to 4 for memory optimization (512 MB limit)
         nyt_image_url: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -39,7 +52,7 @@ class AnimatedReelCreator:
             commentary: AI-generated commentary
             voice_audio_path: Path to voice narration audio file
             target_duration: Target video duration in seconds
-            clips_count: Number of additional clips to use (6-8 recommended for dynamic feel)
+            clips_count: Number of additional clips (4 = good balance for 512 MB RAM)
             nyt_image_url: NYT article image URL (will be first clip)
             
         Returns:
@@ -183,14 +196,22 @@ class AnimatedReelCreator:
                         clips.append(img_clip)
                         logger.info(f"✅ Added photo clip {i+1} with Ken Burns effect: {clip_duration:.1f}s")
                     
-                    # Clean up downloaded file
+                    # MEMORY OPTIMIZATION: Clean up downloaded file immediately
                     try:
                         os.unlink(media_path)
                     except:
                         pass
+                    
+                    # MEMORY OPTIMIZATION: Force garbage collection after each clip
+                    gc.collect()
                         
                 except Exception as clip_error:
                     logger.warning(f"⚠️ Error processing clip {i+1}: {clip_error}")
+                    # Clean up on error
+                    try:
+                        os.unlink(media_path)
+                    except:
+                        pass
                     continue
             
             # Step 4: Prepend NYT image clip if available
@@ -269,17 +290,23 @@ class AnimatedReelCreator:
                 ffmpeg_params=['-movflags', '+faststart', '-crf', '20']  # Optimize for streaming + quality
             )
             
-            # Clean up clips
+            # MEMORY OPTIMIZATION: Clean up clips immediately after export
             for clip in clips:
                 try:
                     clip.close()
+                    del clip
                 except:
                     pass
+            clips = []  # Clear list
             
             try:
                 final_video.close()
+                del final_video
             except:
                 pass
+            
+            # MEMORY OPTIMIZATION: Force garbage collection
+            gc.collect()
             
             file_size_mb = os.path.getsize(temp_video.name) / (1024 * 1024)
             logger.info(f"✅ Created animated reel: {file_size_mb:.2f} MB")
