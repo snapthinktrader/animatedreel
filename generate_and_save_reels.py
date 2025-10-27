@@ -155,7 +155,7 @@ def generate_reel(article):
         voice_path = tts.generate_voice(
             commentary,
             voice_audio.name,
-            voice_name="en-US-Neural2-J"
+            voice_name="en-US-Studio-O"  # Female news anchor - Rachel Anderson
         )
         
         if not voice_path:

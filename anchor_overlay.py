@@ -90,6 +90,7 @@ class AnchorOverlaySystem:
         draw = ImageDraw.Draw(overlay)
         
         # Load and process anchor image
+        anchor_width = 160  # Default width
         try:
             anchor_img = Image.open(self.anchor_image_path).convert('RGBA')
             
@@ -124,7 +125,7 @@ class AnchorOverlaySystem:
             
         except Exception as e:
             print(f"⚠️  Could not load anchor image: {e}")
-            # Continue without anchor photo
+            # Continue without anchor photo - use default width
             anchor_x = overlay_width - 100
             anchor_y = 20
         
