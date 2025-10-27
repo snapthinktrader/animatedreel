@@ -252,22 +252,35 @@ GOOD examples:
 
 Article topic: {headline}
 
-Return ONLY 5 comma-separated NEWS-APPROPRIATE search terms:"""
+RESPOND WITH ONLY THE KEYWORDS - NO EXPLANATIONS, NO INTRODUCTION TEXT.
+Format: keyword1, keyword2, keyword3, keyword4, keyword5"""
 
             # Call Groq API
             response = client.chat.completions.create(
                 model="llama-3.1-8b-instant",
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
-                max_tokens=100
+                max_tokens=150
             )
             
             # Extract search terms
             search_terms_text = response.choices[0].message.content.strip()
+            
+            # Remove any intro text if model still adds it
+            if ":" in search_terms_text and search_terms_text.index(":") < 50:
+                search_terms_text = search_terms_text.split(":", 1)[-1].strip()
+            
+            # Remove newlines and split by commas
+            search_terms_text = search_terms_text.replace('\n', ',').replace('  ', ' ')
             search_terms = [term.strip() for term in search_terms_text.split(',')]
             
-            # Clean and validate
-            search_terms = [term for term in search_terms if len(term) > 3][:5]
+            # Clean and validate - remove empty, too short, or intro phrases
+            search_terms = [
+                term for term in search_terms 
+                if len(term) > 3 
+                and not term.lower().startswith(('here', 'these', 'the following'))
+                and len(term) < 60  # Reject overly long "sentences"
+            ][:5]
             
             logger.info(f"🔑 AI-extracted search terms: {', '.join(search_terms)}")
             return search_terms

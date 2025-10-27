@@ -162,7 +162,7 @@ class AnimatedReelCreator:
                         
                         # Trim to desired duration
                         video_duration = min(video_clip.duration, clip_duration)
-                        video_clip = video_clip.subclipped(0, video_duration)
+                        video_clip = video_clip.subclip(0, video_duration)
                         
                         # Resize to 9:16 (1080x1920) for Instagram Reels
                         video_clip = self._resize_to_portrait(video_clip, target_width=1080, target_height=1920)
@@ -230,12 +230,12 @@ class AnimatedReelCreator:
                     # Adjust video duration to match audio
                     if audio.duration > final_video.duration:
                         logger.info(f"📏 Extending video to {audio.duration:.1f}s to match narration")
-                        final_video = final_video.with_duration(audio.duration)
+                        final_video = final_video.set_duration(audio.duration)
                     elif audio.duration < final_video.duration:
                         # Trim video to match audio
-                        final_video = final_video.subclipped(0, audio.duration)
+                        final_video = final_video.subclip(0, audio.duration)
                     
-                    final_video = final_video.with_audio(audio)
+                    final_video = final_video.set_audio(audio)
                     logger.info(f"✅ Added voice narration ({audio.duration:.1f}s)")
                     
                     # Step 7b: Add synced captions (transcribe audio and add word-by-word)
@@ -347,16 +347,16 @@ class AnimatedReelCreator:
             new_width = int(h * target_ratio)
             x_center = w // 2
             x1 = x_center - new_width // 2
-            clip = clip.cropped(x1=x1, width=new_width)
+            clip = clip.crop(x1=x1, width=new_width)
         else:
             # Video is taller, crop height
             new_height = int(w / target_ratio)
             y_center = h // 2
             y1 = y_center - new_height // 2
-            clip = clip.cropped(y1=y1, height=new_height)
+            clip = clip.crop(y1=y1, height=new_height)
         
         # Resize to target resolution
-        clip = clip.resized((target_width, target_height))
+        clip = clip.resize((target_width, target_height))
         
         return clip
     
@@ -414,10 +414,10 @@ class AnimatedReelCreator:
             )
             
             # Position at bottom third of screen
-            txt_clip = txt_clip.with_position(('center', 1400))
+            txt_clip = txt_clip.set_position(('center', 1400))
             
             # Show for first 3 seconds with fade out
-            txt_clip = txt_clip.with_duration(duration).with_effects([("fade_out", 0.5)])
+            txt_clip = txt_clip.set_duration(duration).fadeout(0.5)
             
             # Composite text over video
             video_with_text = CompositeVideoClip([video_clip, txt_clip])
@@ -501,7 +501,7 @@ class AnimatedReelCreator:
             
             # Create ImageClip from overlay
             headline_clip = ImageClip(headline_array, duration=duration)
-            headline_clip = headline_clip.with_position((0, 0))  # Top of video
+            headline_clip = headline_clip.set_position((0, 0))  # Top of video
             
             # Composite: video + headline
             video_with_text = CompositeVideoClip([video_clip, headline_clip])
@@ -689,8 +689,8 @@ class AnimatedReelCreator:
                     max_y = video_height - caption_img.height - 200  # 200px from bottom
                     y_position = min((video_height // 2) + 300, max_y)  # Lower third, but safe
                     
-                    caption_clip = caption_clip.with_position((x_position, y_position))
-                    caption_clip = caption_clip.with_start(start_time)
+                    caption_clip = caption_clip.set_position((x_position, y_position))
+                    caption_clip = caption_clip.set_start(start_time)
                     
                     caption_clips.append(caption_clip)
                     caption_count += 1
@@ -765,8 +765,8 @@ class AnimatedReelCreator:
                         size=(950, None),
                         method='caption'
                     )
-                    caption_clip = caption_clip.with_position(('center', 1600))
-                    caption_clip = caption_clip.with_start(start_time).with_duration(duration_per_sentence)
+                    caption_clip = caption_clip.set_position(('center', 1600))
+                    caption_clip = caption_clip.set_start(start_time).set_duration(duration_per_sentence)
                     caption_clips.append(caption_clip)
                 except:
                     continue
