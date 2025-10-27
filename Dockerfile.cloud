@@ -1,0 +1,26 @@
+# Dockerfile for Google Cloud Run Video Processor
+FROM python:3.11-slim
+
+# Install system dependencies for video processing
+RUN apt-get update && apt-get install -y \
+    ffmpeg \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Copy requirements
+COPY requirements-cloud.txt .
+RUN pip install --no-cache-dir -r requirements-cloud.txt
+
+# Copy application
+COPY cloud_video_processor.py .
+
+# Set environment variables
+ENV PORT=8080
+ENV PYTHONUNBUFFERED=1
+
+# Cloud Run will provide 2GB+ RAM
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "600", "--workers", "1", "--threads", "4", "cloud_video_processor:app"]

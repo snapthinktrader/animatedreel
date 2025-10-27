@@ -1,0 +1,22 @@
+# Video processing
+moviepy==1.0.3
+pillow>=10.0.0
+imageio-ffmpeg>=0.4.9
+
+# Web framework
+flask>=3.0.0
+gunicorn>=21.2.0
+
+# APIs and HTTP
+requests>=2.31.0
+groq>=0.4.0
+
+# Database
+psycopg2-binary>=2.9.9
+
+# Google API client
+google-api-python-client>=2.100.0
+
+# Utilities
+python-dotenv>=1.0.0
+

@@ -1,0 +1,17 @@
+# Ignore files for Cloud Run deployment
+.git
+.gitignore
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+*.log
+.DS_Store
+test_*.py
+*.md
+!requirements-cloud.txt
+!Dockerfile.cloud
+!cloud_video_processor.py

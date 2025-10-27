@@ -21,7 +21,7 @@ try:
 except:
     pass
 
-from animated_reel_creator import AnimatedReelCreator
+from lightweight_reel_creator import LightweightReelCreator
 from google_tts_voice import GoogleTTSVoice
 
 # Configure logging
@@ -162,9 +162,9 @@ def generate_reel(article):
             logger.error("❌ Failed to generate voice")
             return None
         
-        # Create animated reel
-        logger.info("🎥 Creating animated reel...")
-        creator = AnimatedReelCreator()
+        # Create animated reel (using Cloud Run for heavy processing)
+        logger.info("🎥 Creating animated reel with Cloud Run hybrid architecture...")
+        creator = LightweightReelCreator()
         
         video_path = creator.create_animated_reel(
             headline=headline,

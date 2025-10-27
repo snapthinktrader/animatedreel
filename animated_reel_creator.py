@@ -201,8 +201,10 @@ class AnimatedReelCreator:
             
             logger.info(f"💾 {len(clip_ids)} clips stored in buffer, total size: {self.buffer.get_buffer_stats()['total_mb']:.2f} MB")
             
-            # Step 4: Process clips from buffer ONE AT A TIME to minimize memory
+            # Step 4: Process clips from buffer ONE AT A TIME with IMMEDIATE cleanup
+            # MEMORY OPTIMIZATION: Don't keep clips in list - concatenate in batches
             clips = []
+            batch_size = 2  # Process 2 clips at a time to minimize memory usage
             
             for i, clip_info in enumerate(clip_ids):
                 clip_id = clip_info['id']
@@ -250,12 +252,52 @@ class AnimatedReelCreator:
                     traceback.print_exc()
                 
                 finally:
-                    # CRITICAL: Delete temp file immediately after processing
+                    # CRITICAL: Delete temp file and buffer entry IMMEDIATELY after processing
                     try:
                         os.unlink(media_path)
                         logger.info(f"🗑️ Deleted temp file for clip {i+1}")
                     except Exception as e:
                         logger.warning(f"⚠️ Could not delete temp file: {e}")
+                    
+                    # Delete from buffer immediately to free database space
+                    try:
+                        self.buffer.delete_clip(clip_id)
+                    except:
+                        pass
+                    
+                    # MEMORY CRITICAL: If we've accumulated batch_size clips, concatenate and clear
+                    if len(clips) >= batch_size and i < len(clip_ids) - 1:
+                        logger.info(f"💾 Batch processing {len(clips)} clips to free memory...")
+                        try:
+                            # Concatenate current batch
+                            batch_concat = concatenate_videoclips(clips, method="compose")
+                            
+                            # Write to temp file
+                            temp_batch = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+                            batch_concat.write_videofile(
+                                temp_batch.name,
+                                codec='libx264',
+                                audio_codec='aac',
+                                temp_audiofile=f'/tmp/temp_audio_{i}.m4a',
+                                remove_temp=True,
+                                fps=30,
+                                preset='ultrafast',
+                                threads=2,
+                                logger=None
+                            )
+                            
+                            # Close and delete clips from memory
+                            for clip in clips:
+                                clip.close()
+                            clips = []
+                            gc.collect()
+                            
+                            # Load batch as single clip
+                            clips.append(VideoFileClip(temp_batch.name))
+                            logger.info(f"✅ Batch concatenated and memory freed")
+                            
+                        except Exception as batch_error:
+                            logger.warning(f"⚠️ Batch processing failed: {batch_error}")
                     
                     # Force garbage collection after each clip
                     gc.collect()

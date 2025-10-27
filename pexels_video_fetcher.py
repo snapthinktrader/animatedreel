@@ -220,6 +220,11 @@ class PexelsMediaFetcher:
             if content_length:
                 size_mb = int(content_length) / (1024 * 1024)
                 logger.info(f"📊 File size: {size_mb:.2f} MB")
+                
+                # CRITICAL: Skip large files to prevent memory issues on 512 MB RAM
+                if size_mb > 10:
+                    logger.warning(f"⚠️ Skipping large file ({size_mb:.2f} MB) to prevent memory issues")
+                    return None
             
             # Save to temp file first
             suffix = '.mp4' if media_type == 'video' else '.jpg'
