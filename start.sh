@@ -3,6 +3,10 @@
 
 echo "🚀 Starting Animated Reel System..."
 
+# Run database migration first
+echo "📊 Running database migration for chunking support..."
+python migrate_chunking.py
+
 # Start the continuous worker in the background
 echo "🎬 Starting continuous reel generator..."
 python generate_and_save_reels.py &
