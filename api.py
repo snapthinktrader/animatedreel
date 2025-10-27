@@ -29,6 +29,20 @@ def get_reel_creator():
         logger.info("✅ AnimatedReelCreator ready")
     return reel_creator
 
+@app.route('/', methods=['GET'])
+def index():
+    """Root endpoint with API documentation"""
+    return jsonify({
+        'service': 'Animated Reel Generator API',
+        'version': '1.0.0',
+        'status': 'running',
+        'endpoints': {
+            'health': '/health',
+            'generate_reel': '/generate-reel (POST)'
+        },
+        'documentation': 'https://github.com/snapthinktrader/animatedreel'
+    }), 200
+
 @app.route('/health', methods=['GET'])
 def health():
     """Health check endpoint"""

@@ -1,9 +1,8 @@
+#!/usr/bin/env python3
 """
-Automated reel generation script that:
-1. Fetches NYT articles
-2. Generates animated reels
-3. Saves to CockroachDB
-4. Waits 12 minutes between generations
+Continuous reel generation worker for Render deployment
+Fetches NYT articles, generates animated reels, saves to CockroachDB
+Runs continuously with 12-minute intervals between generations
 """
 
 import os
@@ -13,6 +12,8 @@ import logging
 import requests
 from datetime import datetime
 import psycopg2
+from threading import Thread
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from animated_reel_creator import AnimatedReelCreator
 from google_tts_voice import GoogleTTSVoice
 
@@ -22,6 +23,22 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+# Simple health check handler for Render
+class HealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        if self.path == '/health' or self.path == '/':
+            self.send_response(200)
+            self.send_header('Content-type', 'text/plain')
+            self.end_headers()
+            self.wfile.write(b'OK - Animated Reel Generator Running')
+        else:
+            self.send_response(404)
+            self.end_headers()
+    
+    def log_message(self, format, *args):
+        # Suppress HTTP logs
+        pass
 
 # Environment variables
 NYT_API_KEY = os.getenv('NYT_API_KEY')
@@ -197,75 +214,138 @@ def generate_reel(article):
         traceback.print_exc()
         return None
 
+def keep_alive_during_sleep(sleep_duration, ping_interval=720):
+    """
+    Keep Render service alive during sleep by pinging health endpoint
+    
+    Args:
+        sleep_duration: Total time to sleep in seconds
+        ping_interval: Time between pings in seconds (default 12 minutes = 720s)
+    """
+    service_url = os.getenv('RENDER_EXTERNAL_URL', 'http://localhost:10000')
+    health_url = f"{service_url}/health"
+    
+    elapsed = 0
+    while elapsed < sleep_duration:
+        sleep_time = min(ping_interval, sleep_duration - elapsed)
+        time.sleep(sleep_time)
+        elapsed += sleep_time
+        
+        if elapsed < sleep_duration:
+            try:
+                response = requests.get(health_url, timeout=10)
+                if response.status_code == 200:
+                    logger.info(f"💓 Keep-alive ping successful ({elapsed}/{sleep_duration}s)")
+            except:
+                pass
+
 def main():
-    """Main generation loop"""
-    logger.info("=" * 60)
-    logger.info("🎬 AUTOMATED REEL GENERATION STARTED")
-    logger.info("=" * 60)
+    """Main generation loop - runs continuously"""
+    print("=" * 70)
+    print("🚀 Animated Reel Generator Starting...")
+    print("=" * 70)
+    print(f"📅 Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"⏰ Generation interval: 12 minutes")
+    print("=" * 70)
+    print()
     
-    # Get database connection
-    conn = get_db_connection()
-    if not conn:
-        logger.error("❌ Cannot continue without database connection")
-        return
+    # Start health check server in background (for Render)
+    port = int(os.getenv('PORT', '10000'))
+    health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
+    health_thread = Thread(target=health_server.serve_forever, daemon=True)
+    health_thread.start()
+    logger.info(f"� Health check server started on port {port}")
     
-    try:
-        # Fetch NYT articles
-        logger.info("\n📰 Fetching NYT articles...")
-        articles = fetch_nyt_articles(section='world', limit=10)
-        
-        if not articles:
-            logger.error("❌ No articles fetched")
-            return
-        
-        # Process each article
-        generated_count = 0
-        
-        for i, article in enumerate(articles, 1):
-            article_url = article.get('url', '')
-            headline = article.get('title', '')[:60]
+    # Generation interval (12 minutes = 720 seconds)
+    GENERATION_INTERVAL = 12 * 60
+    
+    generation_count = 0
+    error_count = 0
+    
+    while True:
+        try:
+            cycle_start = datetime.now()
+            logger.info(f"\n{'='*70}")
+            logger.info(f"🔄 Generation Cycle #{generation_count + 1}")
+            logger.info(f"   Started at: {cycle_start.strftime('%H:%M:%S')}")
+            logger.info(f"{'='*70}")
             
-            logger.info(f"\n{'='*60}")
-            logger.info(f"📄 Article {i}/{len(articles)}: {headline}...")
-            
-            # Check if already processed
-            if check_article_exists(conn, article_url):
-                logger.info("⏭️  Article already processed, skipping...")
+            # Get database connection
+            conn = get_db_connection()
+            if not conn:
+                logger.error("❌ Cannot connect to database, retrying in 5 minutes...")
+                time.sleep(300)
                 continue
             
-            # Generate reel
-            reel_data = generate_reel(article)
-            
-            if reel_data:
-                # Save to database
-                reel_id = save_reel_to_db(conn, reel_data)
+            try:
+                # Fetch NYT articles
+                logger.info("\n📰 Fetching NYT articles...")
+                articles = fetch_nyt_articles(section='world', limit=10)
                 
-                if reel_id:
-                    generated_count += 1
-                    logger.info(f"✅ Reel {generated_count} saved: {reel_id}")
+                if not articles:
+                    logger.warning("⚠️ No articles fetched")
+                else:
+                    # Try to find an unprocessed article
+                    generated_this_cycle = False
                     
-                    # Sleep 12 minutes before next generation
-                    if i < len(articles):
-                        logger.info("⏳ Waiting 12 minutes before next reel...")
-                        time.sleep(12 * 60)  # 12 minutes
-            else:
-                logger.error("❌ Failed to generate reel")
-        
-        logger.info(f"\n{'='*60}")
-        logger.info(f"✅ GENERATION COMPLETE")
-        logger.info(f"   Generated: {generated_count} reels")
-        logger.info(f"   Skipped: {len(articles) - generated_count} articles")
-        logger.info("=" * 60)
-        
-    except KeyboardInterrupt:
-        logger.info("\n⚠️  Generation interrupted by user")
-    except Exception as e:
-        logger.error(f"❌ Error in main loop: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        conn.close()
-        logger.info("🔌 Database connection closed")
+                    for article in articles:
+                        article_url = article.get('url', '')
+                        headline = article.get('title', '')[:60]
+                        
+                        # Check if already processed
+                        if check_article_exists(conn, article_url):
+                            logger.info(f"⏭️  Already processed: {headline}...")
+                            continue
+                        
+                        # Generate reel for this article
+                        logger.info(f"🎬 Generating reel: {headline}...")
+                        reel_data = generate_reel(article)
+                        
+                        if reel_data:
+                            # Save to database
+                            reel_id = save_reel_to_db(conn, reel_data)
+                            
+                            if reel_id:
+                                generation_count += 1
+                                error_count = 0
+                                logger.info(f"✅ Reel saved: {reel_id}")
+                                logger.info(f"📊 Total generated: {generation_count}")
+                                generated_this_cycle = True
+                                break  # Only generate one per cycle
+                        else:
+                            error_count += 1
+                            logger.error("❌ Failed to generate reel")
+                    
+                    if not generated_this_cycle:
+                        logger.info("✅ All articles already processed")
+                
+            finally:
+                conn.close()
+            
+            # Calculate next generation time
+            next_gen_time = datetime.now().timestamp() + GENERATION_INTERVAL
+            next_gen_datetime = datetime.fromtimestamp(next_gen_time)
+            
+            logger.info(f"\n⏰ Next generation: {next_gen_datetime.strftime('%H:%M:%S')}")
+            logger.info(f"💤 Sleeping for 12 minutes...\n")
+            
+            # Sleep with keep-alive pings
+            keep_alive_during_sleep(GENERATION_INTERVAL, ping_interval=720)
+            
+        except KeyboardInterrupt:
+            logger.info("\n\n⚠️ Received interrupt signal")
+            logger.info(f"📊 Total reels generated: {generation_count}")
+            logger.info("👋 Shutting down gracefully...")
+            break
+            
+        except Exception as e:
+            logger.error(f"❌ Unexpected error in main loop: {e}")
+            import traceback
+            traceback.print_exc()
+            logger.info("⏰ Waiting 5 minutes before retry...")
+            time.sleep(300)
+    
+    return 0
 
 if __name__ == '__main__':
     main()
