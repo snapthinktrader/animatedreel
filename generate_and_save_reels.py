@@ -12,8 +12,6 @@ import logging
 import requests
 from datetime import datetime
 import psycopg2
-from threading import Thread
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from animated_reel_creator import AnimatedReelCreator
 from google_tts_voice import GoogleTTSVoice
 
@@ -23,22 +21,6 @@ logging.basicConfig(
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Simple health check handler for Render
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        if self.path == '/health' or self.path == '/':
-            self.send_response(200)
-            self.send_header('Content-type', 'text/plain')
-            self.end_headers()
-            self.wfile.write(b'OK - Animated Reel Generator Running')
-        else:
-            self.send_response(404)
-            self.end_headers()
-    
-    def log_message(self, format, *args):
-        # Suppress HTTP logs
-        pass
 
 # Environment variables
 NYT_API_KEY = os.getenv('NYT_API_KEY')
@@ -249,12 +231,8 @@ def main():
     print("=" * 70)
     print()
     
-    # Start health check server in background (for Render)
-    port = int(os.getenv('PORT', '10000'))
-    health_server = HTTPServer(('0.0.0.0', port), HealthCheckHandler)
-    health_thread = Thread(target=health_server.serve_forever, daemon=True)
-    health_thread.start()
-    logger.info(f"� Health check server started on port {port}")
+    # Note: Health checks are handled by the main API server (api.py)
+    # No need for separate health check server here
     
     # Generation interval (12 minutes = 720 seconds)
     GENERATION_INTERVAL = 12 * 60
