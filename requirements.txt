@@ -9,7 +9,6 @@ gunicorn>=21.2.0
 
 # APIs and HTTP
 requests>=2.31.0
-google-cloud-texttospeech>=2.14.1
 groq>=0.4.0
 
 # Database

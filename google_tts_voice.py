@@ -9,9 +9,13 @@ import tempfile
 import logging
 import requests
 import base64
-from google.cloud import texttospeech
-from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
+
+# Only import google.cloud if not using REST API
+try:
+    from google.cloud import texttospeech
+    HAS_GOOGLE_CLOUD = True
+except ImportError:
+    HAS_GOOGLE_CLOUD = False
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +33,11 @@ class GoogleTTSVoice:
     
     def _setup_client(self):
         """Set up Google Cloud TTS client with OAuth or Service Account"""
+        if not HAS_GOOGLE_CLOUD:
+            logger.warning("⚠️  google-cloud-texttospeech not installed. Using REST API only.")
+            self.client = None
+            return
+            
         try:
             # Option 1: Base64-encoded credentials (recommended for Render)
             creds_base64 = os.getenv('GOOGLE_TTS_CREDENTIALS_BASE64')
