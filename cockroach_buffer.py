@@ -27,13 +27,15 @@ class CockroachBufferStorage:
     def connect(self):
         """Connect to CockroachDB"""
         try:
-            connection_string = os.getenv('DATABASE_URL')
+            # Check for DATABASE_URL (Render) or COCKROACHDB_URI (local)
+            connection_string = os.getenv('DATABASE_URL') or os.getenv('COCKROACHDB_URI')
             if not connection_string:
-                raise ValueError("DATABASE_URL not found in environment")
+                raise ValueError("DATABASE_URL or COCKROACHDB_URI not found in environment")
             
             # Ensure SSL mode
             if '?' in connection_string:
-                connection_string += '&sslmode=require'
+                if 'sslmode' not in connection_string:
+                    connection_string += '&sslmode=require'
             else:
                 connection_string += '?sslmode=require'
             
@@ -90,10 +92,10 @@ class CockroachBufferStorage:
             cursor.execute("""
                 INSERT INTO temp_clips (clip_data, media_type, file_size_mb, session_id)
                 VALUES (%s, %s, %s, %s)
-                RETURNING id
+                RETURNING id::text
             """, (clip_data, media_type, file_size_mb, session_id))
             
-            clip_id = cursor.fetchone()[0]
+            clip_id = cursor.fetchone()[0]  # Get as string
             self.conn.commit()
             cursor.close()
             
@@ -124,11 +126,12 @@ class CockroachBufferStorage:
         """
         try:
             cursor = self.conn.cursor()
+            # Use CAST to ensure proper UUID comparison
             cursor.execute("""
                 SELECT clip_data, media_type, file_size_mb
                 FROM temp_clips
-                WHERE id = %s
-            """, (clip_id,))
+                WHERE id::text = %s
+            """, (str(clip_id),))
             
             row = cursor.fetchone()
             cursor.close()
@@ -142,7 +145,7 @@ class CockroachBufferStorage:
             # Save to temp file
             suffix = '.mp4' if media_type == 'video' else '.jpg'
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-            temp_file.write(clip_data)
+            temp_file.write(bytes(clip_data))
             temp_file.close()
             
             logger.info(f"📥 Retrieved {media_type} clip from buffer: {file_size_mb:.2f} MB")
@@ -157,12 +160,13 @@ class CockroachBufferStorage:
         """Delete a single clip from buffer"""
         try:
             cursor = self.conn.cursor()
-            cursor.execute("DELETE FROM temp_clips WHERE id = %s", (clip_id,))
+            cursor.execute("DELETE FROM temp_clips WHERE id::text = %s", (str(clip_id),))
             self.conn.commit()
             cursor.close()
             logger.info(f"🗑️ Deleted clip from buffer: {clip_id}")
             
         except Exception as e:
+            self.conn.rollback()
             logger.error(f"❌ Failed to delete clip: {e}")
     
     def delete_session_clips(self, session_id: str):
@@ -178,6 +182,7 @@ class CockroachBufferStorage:
                 logger.info(f"🗑️ Deleted {deleted_count} clips from session: {session_id}")
             
         except Exception as e:
+            self.conn.rollback()
             logger.error(f"❌ Failed to delete session clips: {e}")
     
     def cleanup_old_clips(self, hours: int = 2):
@@ -197,6 +202,7 @@ class CockroachBufferStorage:
                 logger.info(f"🧹 Cleaned up {deleted_count} old clips (>{hours}h)")
             
         except Exception as e:
+            self.conn.rollback()
             logger.error(f"❌ Failed to cleanup old clips: {e}")
     
     def get_buffer_stats(self):

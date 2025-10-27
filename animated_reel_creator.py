@@ -259,24 +259,6 @@ class AnimatedReelCreator:
                     
                     # Force garbage collection after each clip
                     gc.collect()
-                    
-                    # MEMORY OPTIMIZATION: Clean up downloaded file immediately
-                    try:
-                        os.unlink(media_path)
-                    except:
-                        pass
-                    
-                    # MEMORY OPTIMIZATION: Force garbage collection after each clip
-                    gc.collect()
-                        
-                except Exception as clip_error:
-                    logger.warning(f"⚠️ Error processing clip {i+1}: {clip_error}")
-                    # Clean up on error
-                    try:
-                        os.unlink(media_path)
-                    except:
-                        pass
-                    continue
             
             # Step 4: Prepend NYT image clip if available
             if nyt_clip:

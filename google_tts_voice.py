@@ -74,19 +74,20 @@ class GoogleTTSVoice:
             logger.info("ℹ️  For Render, set GOOGLE_TTS_API_KEY env variable")
             self.client = None
     
-    def generate_voice(self, text, output_path, voice_name="en-US-Neural2-J"):
+    def generate_voice(self, text, output_path, voice_name="en-US-Studio-O"):
         """
         Generate voice narration from text
         
         Args:
             text: Text to convert to speech
             output_path: Path to save audio file
-            voice_name: Voice to use (default: Neural2-J - male news anchor)
+            voice_name: Voice to use (default: Studio-O - female news anchor, Rachel Anderson style)
                        Options:
-                       - en-US-Neural2-J (male, news anchor quality)
-                       - en-US-Neural2-F (female, warm)
-                       - en-US-Neural2-A (male, clear)
+                       - en-US-Studio-O (female, authoritative news anchor) ✅ DEFAULT - Rachel Anderson
+                       - en-US-Neural2-F (female, warm, news quality)
                        - en-US-Neural2-C (female, professional)
+                       - en-US-Neural2-J (male, news anchor quality)
+                       - en-US-Neural2-A (male, clear)
         
         Returns:
             Path to generated audio file or None if failed
@@ -157,7 +158,7 @@ class GoogleTTSVoice:
             traceback.print_exc()
             return None
     
-    def _generate_voice_rest_api(self, text, output_path, voice_name="en-US-Neural2-J"):
+    def _generate_voice_rest_api(self, text, output_path, voice_name="en-US-Studio-O"):
         """
         Generate voice using Google Cloud TTS REST API with API key
         Simpler and better for Render deployment

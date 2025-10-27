@@ -33,6 +33,11 @@ class PexelsMediaFetcher:
         self.groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
         self.buffer = CockroachBufferStorage()  # Initialize buffer storage
         
+        # Set up headers for API requests
+        self.headers = {
+            'Authorization': self.api_key
+        }
+        
         if not self.api_key:
             logger.warning("⚠️ PEXEL API key not found in environment variables")
         
