@@ -23,6 +23,8 @@ except Exception as e:
 from pexels_video_fetcher import PexelsMediaFetcher
 from google_photos_fetcher import GoogleImageSearchFetcher
 from anchor_overlay import AnchorOverlaySystem
+from cockroach_buffer import CockroachBufferStorage
+import uuid  # For generating session IDs
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +36,7 @@ class AnimatedReelCreator:
         self.google_images = GoogleImageSearchFetcher()
         self.use_google_images = os.getenv('USE_GOOGLE_IMAGES', 'true').lower() == 'true'
         self.anchor_system = AnchorOverlaySystem()
+        self.buffer = CockroachBufferStorage()  # Initialize buffer storage
     
     def create_animated_reel(
         self,
@@ -41,23 +44,31 @@ class AnimatedReelCreator:
         commentary: str,
         voice_audio_path: Optional[str] = None,
         target_duration: int = 30,
-        clips_count: int = 4,  # REDUCED from 6 to 4 for memory optimization (512 MB limit)
+        clips_count: int = 6,  # Back to 6 clips - buffer storage handles memory
         nyt_image_url: Optional[str] = None
     ) -> Optional[str]:
         """
         Create an animated reel with NYT article image + multiple video/photo clips
+        Uses CockroachDB buffer to prevent memory issues on Render
         
         Args:
             headline: Article headline
             commentary: AI-generated commentary
             voice_audio_path: Path to voice narration audio file
             target_duration: Target video duration in seconds
-            clips_count: Number of additional clips (4 = good balance for 512 MB RAM)
+            clips_count: Number of additional clips (can use 6+ with buffer storage)
             nyt_image_url: NYT article image URL (will be first clip)
             
         Returns:
             Path to created video file or None if failed
         """
+        # Generate unique session ID for this reel
+        session_id = str(uuid.uuid4())[:8]
+        logger.info(f"🎬 Creating animated reel (Session: {session_id})...")
+        
+        # Cleanup old buffer clips at start
+        self.buffer.cleanup_old_clips(hours=2)
+        
         try:
             logger.info("🎬 Creating animated reel with NYT image + stock footage...")
             
@@ -135,40 +146,74 @@ class AnimatedReelCreator:
             import random
             random.shuffle(all_media)
             
-            # MEMORY OPTIMIZATION: Limit to 3 clips max for 512 MB RAM
-            max_clips = min(3, clips_count)  # Force maximum of 3 clips
-            all_media = all_media[:max_clips]
+            # With buffer storage, we can handle 6 clips safely
+            all_media = all_media[:clips_count]
             
             if not all_media:
                 logger.error("❌ No media found on Pexels or Google Images, falling back to static image")
                 return None
             
-            logger.info(f"✅ Found {len(all_media)} media clips (max {max_clips} for memory optimization):")
+            logger.info(f"✅ Found {len(all_media)} media clips:")
             logger.info(f"   - Videos: {sum(1 for m in all_media if m['type'] == 'video')}")
             logger.info(f"   - Photos (Pexels): {sum(1 for m in all_media if m['type'] == 'photo' and m['source'] == 'pexels')}")
             logger.info(f"   - Photos (Google): {sum(1 for m in all_media if m['type'] == 'photo' and m['source'] == 'google_images')}")
             
-            # Step 3: Download media and create clips
-            clips = []
+            # Step 3: Download media to buffer and collect clip IDs
+            clip_ids = []  # Store buffer IDs instead of file paths
             clip_duration = max(3.0, target_duration / (len(all_media) + 1))  # Shorter clips (3-5s each), +1 for NYT image
             
             logger.info(f"⏱️  Individual clip duration: {clip_duration:.1f}s for dynamic transitions")
+            logger.info(f"💾 Downloading clips to CockroachDB buffer...")
             
             for i, media in enumerate(all_media):
                 media_type = media['type']
                 media_data = media['data']
                 media_source = media['source']
                 
-                # Download media from appropriate source
+                # Download media from appropriate source (returns buffer ID, not file path)
                 if media_source == 'pexels':
-                    media_path = self.pexels.download_media(media_data['url'], media_type)
+                    clip_id = self.pexels.download_media(media_data['url'], media_type, session_id)
                 elif media_source == 'google_images':
+                    # Google images still return file paths for now
                     media_path = self.google_images.download_photo(media_data['url'])
+                    if media_path:
+                        # Store in buffer
+                        clip_id = self.buffer.store_clip(media_path, 'photo', session_id)
+                    else:
+                        clip_id = None
                 else:
-                    media_path = None
+                    clip_id = None
+                
+                if not clip_id:
+                    logger.warning(f"⚠️ Failed to download {media_type} {i+1}, skipping")
+                    continue
+                
+                clip_ids.append({
+                    'id': clip_id,
+                    'type': media_type,
+                    'duration': clip_duration
+                })
+                logger.info(f"✅ Buffered {media_type} clip {i+1} (ID: {clip_id})")
+            
+            if not clip_ids:
+                logger.error("❌ No clips buffered successfully")
+                return None
+            
+            logger.info(f"💾 {len(clip_ids)} clips stored in buffer, total size: {self.buffer.get_buffer_stats()['total_mb']:.2f} MB")
+            
+            # Step 4: Process clips from buffer ONE AT A TIME to minimize memory
+            clips = []
+            
+            for i, clip_info in enumerate(clip_ids):
+                clip_id = clip_info['id']
+                media_type = clip_info['type']
+                clip_dur = clip_info['duration']
+                
+                # Retrieve clip from buffer (creates temp file)
+                media_path = self.buffer.retrieve_clip(clip_id)
                 
                 if not media_path:
-                    logger.warning(f"⚠️ Failed to download {media_type} {i+1}, skipping")
+                    logger.warning(f"⚠️ Failed to retrieve clip {i+1} from buffer, skipping")
                     continue
                 
                 try:
@@ -177,7 +222,7 @@ class AnimatedReelCreator:
                         video_clip = VideoFileClip(media_path)
                         
                         # Trim to desired duration
-                        video_duration = min(video_clip.duration, clip_duration)
+                        video_duration = min(video_clip.duration, clip_dur)
                         video_clip = video_clip.subclip(0, video_duration)
                         
                         # Resize to 9:16 (1080x1920) for Instagram Reels
@@ -188,16 +233,32 @@ class AnimatedReelCreator:
                         
                     else:  # photo
                         # Load photo as image clip
-                        img_clip = ImageClip(media_path, duration=clip_duration)
+                        img_clip = ImageClip(media_path, duration=clip_dur)
                         
                         # Resize to 9:16 portrait
                         img_clip = self._resize_to_portrait(img_clip, target_width=1080, target_height=1920)
                         
                         # Add Ken Burns effect (zoom and pan)
-                        img_clip = self._add_ken_burns_effect(img_clip, clip_duration)
+                        img_clip = self._add_ken_burns_effect(img_clip, clip_dur)
                         
                         clips.append(img_clip)
-                        logger.info(f"✅ Added photo clip {i+1} with Ken Burns effect: {clip_duration:.1f}s")
+                        logger.info(f"✅ Added photo clip {i+1} with Ken Burns effect: {clip_dur:.1f}s")
+                
+                except Exception as e:
+                    logger.error(f"❌ Error processing clip {i+1}: {e}")
+                    import traceback
+                    traceback.print_exc()
+                
+                finally:
+                    # CRITICAL: Delete temp file immediately after processing
+                    try:
+                        os.unlink(media_path)
+                        logger.info(f"🗑️ Deleted temp file for clip {i+1}")
+                    except Exception as e:
+                        logger.warning(f"⚠️ Could not delete temp file: {e}")
+                    
+                    # Force garbage collection after each clip
+                    gc.collect()
                     
                     # MEMORY OPTIMIZATION: Clean up downloaded file immediately
                     try:
@@ -308,6 +369,10 @@ class AnimatedReelCreator:
             except:
                 pass
             
+            # CRITICAL: Delete all buffer clips for this session
+            logger.info(f"🗑️ Cleaning up buffer storage (Session: {session_id})...")
+            self.buffer.delete_session_clips(session_id)
+            
             # MEMORY OPTIMIZATION: Force garbage collection
             gc.collect()
             
@@ -359,6 +424,14 @@ class AnimatedReelCreator:
             logger.error(f"❌ Failed to create animated reel: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            
+            # CRITICAL: Clean up buffer storage on error
+            try:
+                logger.warning(f"🗑️ Cleaning up buffer after error (Session: {session_id})...")
+                self.buffer.delete_session_clips(session_id)
+            except:
+                pass
+            
             return None
     
     def _resize_to_portrait(self, clip, target_width=1080, target_height=1920):

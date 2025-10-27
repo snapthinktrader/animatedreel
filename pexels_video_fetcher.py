@@ -1,6 +1,7 @@
 """
 Pexels API Integration for Animated Reels
 Fetches relevant videos/photos based on headline and creates dynamic presentation-style reels
+Uses CockroachDB buffer to avoid storing large files on Render
 """
 
 import os
@@ -10,6 +11,7 @@ import logging
 from typing import List, Dict, Optional
 from dotenv import load_dotenv
 from groq import Groq
+from cockroach_buffer import CockroachBufferStorage
 
 # Load environment variables from parent directory
 env_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), '.env')
@@ -25,11 +27,17 @@ GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 class PexelsMediaFetcher:
     """Fetch videos and photos from Pexels API"""
     
-    def __init__(self, api_key: str = None):
-        self.api_key = api_key or PEXELS_API_KEY
-        self.headers = {
-            'Authorization': self.api_key
-        }
+    def __init__(self):
+        """Initialize Pexels fetcher with API key and buffer storage"""
+        self.api_key = PEXELS_API_KEY
+        self.groq_client = Groq(api_key=os.getenv('GROQ_API_KEY'))
+        self.buffer = CockroachBufferStorage()  # Initialize buffer storage
+        
+        if not self.api_key:
+            logger.warning("⚠️ PEXEL API key not found in environment variables")
+        
+        if not os.getenv('GROQ_API_KEY'):
+            logger.warning("⚠️ GROQ_API_KEY not found in environment variables")
     
     def search_videos(self, query: str, per_page: int = 5, orientation: str = 'portrait') -> List[Dict]:
         """
@@ -181,16 +189,17 @@ class PexelsMediaFetcher:
             logger.error(f"❌ Error searching Pexels photos: {e}")
             return []
     
-    def download_media(self, url: str, media_type: str = 'video') -> Optional[str]:
+    def download_media(self, url: str, media_type: str = 'video', session_id: str = None) -> Optional[str]:
         """
-        Download video or photo from Pexels
+        Download video or photo from Pexels and store in CockroachDB buffer
         
         Args:
             url: Media URL
             media_type: 'video' or 'photo'
+            session_id: Session ID for grouping clips
             
         Returns:
-            Path to downloaded file or None if failed
+            Clip ID (UUID) from buffer storage, or None if failed
         """
         try:
             logger.info(f"📥 Downloading {media_type} from Pexels...")
@@ -201,39 +210,41 @@ class PexelsMediaFetcher:
                 logger.error(f"❌ Download failed: {response.status_code}")
                 return None
             
-            # MEMORY OPTIMIZATION: Check file size before downloading completely
+            # Check file size before downloading
             content_length = response.headers.get('content-length')
             if content_length:
                 size_mb = int(content_length) / (1024 * 1024)
-                if media_type == 'video' and size_mb > 15:  # Skip videos larger than 15 MB
-                    logger.warning(f"⚠️ Skipping {media_type}: {size_mb:.2f} MB (too large for 512 MB RAM)")
-                    return None
+                logger.info(f"📊 File size: {size_mb:.2f} MB")
             
-            # Save to temp file
+            # Save to temp file first
             suffix = '.mp4' if media_type == 'video' else '.jpg'
             temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
             
-            # Download in chunks with size limit
+            # Download in chunks
             downloaded = 0
-            max_size = 20 * 1024 * 1024  # 20 MB max
-            
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
                     temp_file.write(chunk)
                     downloaded += len(chunk)
-                    # MEMORY OPTIMIZATION: Abort if file too large
-                    if downloaded > max_size:
-                        temp_file.close()
-                        os.unlink(temp_file.name)
-                        logger.warning(f"⚠️ Aborted download: exceeded 20 MB limit")
-                        return None
             
             temp_file.close()
             
             file_size_mb = os.path.getsize(temp_file.name) / (1024 * 1024)
             logger.info(f"✅ Downloaded {media_type}: {file_size_mb:.2f} MB")
             
-            return temp_file.name
+            # Store in CockroachDB buffer and delete local file
+            clip_id = self.buffer.store_clip(temp_file.name, media_type, session_id or 'default')
+            
+            if clip_id:
+                logger.info(f"💾 Clip stored in buffer (ID: {clip_id}), local file deleted")
+                return clip_id
+            else:
+                logger.error(f"❌ Failed to store in buffer, deleting local file")
+                try:
+                    os.unlink(temp_file.name)
+                except:
+                    pass
+                return None
             
         except Exception as e:
             logger.error(f"❌ Error downloading media: {e}")
