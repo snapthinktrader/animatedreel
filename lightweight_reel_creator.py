@@ -46,8 +46,9 @@ class LightweightReelCreator:
         headline: str,
         commentary: str,
         voice_audio_path: str,
-        clips_urls: List[Dict],  # List of {"url": "...", "type": "video", "duration": 3.6}
+        clips_urls: Optional[List[Dict]] = None,  # List of {"url": "...", "type": "video", "duration": 3.6}
         target_duration: int = 25,
+        clips_count: int = 6,  # Number of clips to fetch if clips_urls not provided
         nyt_image_url: Optional[str] = None
     ) -> Optional[str]:
         """
@@ -58,8 +59,9 @@ class LightweightReelCreator:
             headline: News headline
             commentary: Full commentary text
             voice_audio_path: Path to voice narration MP3
-            clips_urls: List of clip URLs from Pexels
+            clips_urls: Optional list of clip URLs from Pexels (if None, will fetch automatically)
             target_duration: Target reel duration
+            clips_count: Number of clips to fetch if clips_urls not provided
             nyt_image_url: Optional NYT article image
             
         Returns:
@@ -67,6 +69,20 @@ class LightweightReelCreator:
         """
         try:
             logger.info("🎬 Creating reel with Cloud Run processing...")
+            
+            # Fetch clips if not provided
+            if clips_urls is None:
+                logger.info(f"📥 Fetching {clips_count} clips from Pexels...")
+                from pexels_video_fetcher import PexelsMediaFetcher
+                pexels_fetcher = PexelsMediaFetcher()
+                clips_urls = pexels_fetcher.get_clips_for_reel(
+                    search_query=headline,
+                    num_clips=clips_count,
+                    duration_per_clip=3.0
+                )
+                if not clips_urls:
+                    logger.error("❌ Failed to fetch clips from Pexels")
+                    return None
             
             # Step 1: Download clips from Pexels and store in CockroachDB buffer
             logger.info(f"📥 Downloading {len(clips_urls)} clips from Pexels to buffer...")
