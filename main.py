@@ -535,9 +535,9 @@ def create_complete_reel():
                 pass
         
         return jsonify({
-            'video_id': video_id,
-            'duration': duration,
-            'file_size_mb': round(file_size_mb, 2)
+            'video_id': str(video_id),
+            'duration': float(duration),
+            'file_size_mb': float(round(file_size_mb, 2))
         })
         
     except Exception as e:
