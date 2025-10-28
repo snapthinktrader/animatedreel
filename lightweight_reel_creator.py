@@ -75,14 +75,31 @@ class LightweightReelCreator:
                 logger.info(f"📥 Fetching {clips_count} clips from Pexels...")
                 from pexels_video_fetcher import PexelsMediaFetcher
                 pexels_fetcher = PexelsMediaFetcher()
-                clips_urls = pexels_fetcher.get_clips_for_reel(
-                    search_query=headline,
-                    num_clips=clips_count,
-                    duration_per_clip=3.0
-                )
+                
+                # Extract keywords and search for videos
+                keywords = pexels_fetcher.extract_search_keywords(headline, commentary)
+                
+                clips_urls = []
+                for keyword in keywords[:3]:  # Use top 3 keywords
+                    videos = pexels_fetcher.search_videos(keyword, per_page=3, orientation='portrait')
+                    for video in videos:
+                        clips_urls.append({
+                            'url': video['url'],
+                            'type': 'video',
+                            'duration': video.get('duration', 3.0)
+                        })
+                        if len(clips_urls) >= clips_count:
+                            break
+                    if len(clips_urls) >= clips_count:
+                        break
+                
                 if not clips_urls:
                     logger.error("❌ Failed to fetch clips from Pexels")
                     return None
+                
+                # Limit to requested count
+                clips_urls = clips_urls[:clips_count]
+                logger.info(f"✅ Fetched {len(clips_urls)} clips from Pexels")
             
             # Step 1: Download clips from Pexels and store in CockroachDB buffer
             logger.info(f"📥 Downloading {len(clips_urls)} clips from Pexels to buffer...")
