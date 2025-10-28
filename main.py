@@ -703,14 +703,92 @@ def generate_reel_from_article():
             return jsonify({'error': 'Reel creation failed', 'details': response.text}), 500
         
         result = response.json()
+        video_id = result['video_id']
+        duration = result['duration']
+        file_size_mb = result['file_size_mb']
         
-        logger.info(f"✅ Complete reel generation finished: {result['duration']:.1f}s")
+        logger.info(f"✅ Complete reel generated: {duration:.1f}s, {file_size_mb:.2f}MB")
         
-        return jsonify({
-            'video_id': result['video_id'],
-            'duration': result['duration'],
-            'file_size_mb': result['file_size_mb']
-        })
+        # Step 5: Retrieve video from processed_videos and save to reels table
+        logger.info("💾 Saving reel to 'reels' table for auto-posting...")
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Retrieve video from processed_videos
+            cursor.execute("""
+                SELECT video_data, is_chunked, total_chunks
+                FROM processed_videos
+                WHERE id = %s
+            """, (video_id,))
+            
+            row = cursor.fetchone()
+            if not row:
+                return jsonify({'error': 'Video not found in buffer'}), 500
+            
+            video_data_chunk, is_chunked, total_chunks = row
+            
+            # If chunked, retrieve all chunks
+            if is_chunked and total_chunks > 1:
+                logger.info(f"📦 Retrieving {total_chunks} chunks...")
+                cursor.execute("""
+                    SELECT chunk_data 
+                    FROM processed_video_chunks
+                    WHERE video_id = %s
+                    ORDER BY chunk_number
+                """, (video_id,))
+                
+                chunks = cursor.fetchall()
+                video_data = b''.join([bytes(chunk[0]) for chunk in chunks])
+            else:
+                video_data = bytes(video_data_chunk)
+            
+            logger.info(f"✅ Retrieved video: {len(video_data) / (1024*1024):.2f} MB")
+            
+            # Insert into reels table
+            cursor.execute("""
+                INSERT INTO reels (
+                    headline, video_data, duration,
+                    article_url, article_id, status, created_at, file_size
+                ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s)
+                RETURNING id
+            """, (
+                headline,
+                psycopg2.Binary(video_data),
+                Decimal(str(duration)),
+                article_url,
+                article_id,
+                'pending',
+                Decimal(str(file_size_mb))
+            ))
+            
+            reel_id = cursor.fetchone()[0]
+            conn.commit()
+            
+            logger.info(f"✅ Reel saved to 'reels' table: {reel_id}")
+            
+            # Clean up processed_videos buffer
+            cursor.execute("DELETE FROM processed_video_chunks WHERE video_id = %s", (video_id,))
+            cursor.execute("DELETE FROM processed_videos WHERE id = %s", (video_id,))
+            conn.commit()
+            
+            logger.info("🧹 Cleaned up buffer storage")
+            
+            cursor.close()
+            conn.close()
+            
+            return jsonify({
+                'reel_id': str(reel_id),
+                'duration': duration,
+                'file_size_mb': file_size_mb,
+                'status': 'saved_to_reels_table'
+            })
+            
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"❌ Database error: {e}")
+            raise
         
     except Exception as e:
         logger.error(f"❌ Error in article reel generation: {e}")
