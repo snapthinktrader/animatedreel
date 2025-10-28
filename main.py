@@ -762,7 +762,7 @@ def generate_reel_from_article():
                 article_id,
                 'pending',
                 Decimal(str(file_size_mb)),
-                abstract  # Use abstract as ai_analysis
+                commentary  # Use commentary as ai_analysis (this is the actual TTS narration)
             ))
             
             reel_id = cursor.fetchone()[0]
