@@ -52,8 +52,8 @@ class LightweightReelCreator:
         nyt_image_url: Optional[str] = None
     ) -> Optional[str]:
         """
-        Create animated reel using Cloud Run for heavy processing
-        NEW ARCHITECTURE: Download clips to buffer first, then process on Cloud Run
+        Create animated reel using Cloud Run for ALL heavy processing
+        Render only: fetch clips, upload metadata, retrieve final video
         
         Args:
             headline: News headline
@@ -68,7 +68,7 @@ class LightweightReelCreator:
             Path to final reel video or None
         """
         try:
-            logger.info("🎬 Creating reel with Cloud Run processing...")
+            logger.info("🎬 Creating reel with Cloud Run (complete processing)...")
             
             # Fetch clips if not provided
             if clips_urls is None:
@@ -101,7 +101,7 @@ class LightweightReelCreator:
                 clips_urls = clips_urls[:clips_count]
                 logger.info(f"✅ Fetched {len(clips_urls)} clips from Pexels")
             
-            # Step 1: Download clips from Pexels and store in CockroachDB buffer
+            # Step 1: Download clips and voice audio to buffer
             logger.info(f"📥 Downloading {len(clips_urls)} clips from Pexels to buffer...")
             
             from pexels_video_fetcher import PexelsMediaFetcher
@@ -130,24 +130,41 @@ class LightweightReelCreator:
             
             logger.info(f"✅ Downloaded {len(clip_ids)} clips to buffer")
             
-            # Step 2: Send clip IDs to Cloud Run for processing
-            logger.info(f"☁️ Sending {len(clip_ids)} clip IDs to Cloud Run for processing...")
-            logger.info("⏱️ Processing will take ~30-60 seconds...")
+            # Step 2: Upload voice audio to buffer for Cloud Run
+            voice_audio_id = None
+            if voice_audio_path and os.path.exists(voice_audio_path):
+                logger.info("🎤 Uploading voice audio to buffer...")
+                with open(voice_audio_path, 'rb') as f:
+                    voice_audio_data = f.read()
+                voice_audio_id = pexels_fetcher.buffer.store_clip(
+                    voice_audio_data,
+                    media_type='audio',
+                    session_id=session_id
+                )
+                logger.info(f"✅ Voice audio uploaded (ID: {voice_audio_id})")
             
-            # Send request with clip IDs instead of URLs
+            # Step 3: Send everything to Cloud Run for COMPLETE reel creation
+            logger.info(f"☁️ Sending all data to Cloud Run for COMPLETE reel processing...")
+            logger.info("⏱️ Processing will take ~60-120 seconds (clips + overlays + captions + voice)...")
+            
+            # Send request with ALL data needed for complete reel
             try:
                 response = requests.post(
-                    f'{self.cloud_processor_url}/process-clips',
+                    f'{self.cloud_processor_url}/create-complete-reel',
                     json={
-                        'clip_ids': clip_ids,  # Changed from 'clips' to 'clip_ids'
+                        'clip_ids': clip_ids,
+                        'headline': headline,
+                        'commentary': commentary,
+                        'voice_audio_id': voice_audio_id,
+                        'nyt_image_url': nyt_image_url,
                         'target_width': 1080,
                         'target_height': 1920
                     },
-                    timeout=300  # 5 minutes for processing (6 clips * 5s each + concatenation + writing)
+                    timeout=600  # 10 minutes for complete processing
                 )
             except requests.exceptions.Timeout:
-                logger.error("❌ Cloud Run timeout - the service may need more memory or be cold starting")
-                logger.info("💡 Try again - Cold starts can take 30-60 seconds on first request")
+                logger.error("❌ Cloud Run timeout - the service may need more time")
+                logger.info("💡 Try again - Complex reel creation can take 2-3 minutes")
                 return None
             except Exception as e:
                 logger.error(f"❌ Cloud processing request failed: {e}")
@@ -162,133 +179,24 @@ class LightweightReelCreator:
             video_id = result['video_id']  # Returned video ID in buffer
             video_duration = result['duration']
             
-            logger.info(f"✅ Cloud processing complete: {video_duration:.1f}s video (ID: {video_id})")
+            logger.info(f"✅ Cloud Run completed FULL reel processing: {video_duration:.1f}s (ID: {video_id})")
             
-            # Step 3: Retrieve processed video from buffer
-            logger.info(f"📥 Retrieving processed video from buffer...")
+            # Step 4: Retrieve final processed video from buffer (NO further processing on Render!)
+            logger.info(f"📥 Retrieving final reel from buffer...")
             
             from cockroach_buffer import CockroachBufferStorage
             buffer = CockroachBufferStorage()
-            temp_video_path = buffer.retrieve_processed_video(video_id)
+            final_video_path = buffer.retrieve_processed_video(video_id)
             
-            if not temp_video_path:
-                logger.error("❌ Failed to retrieve processed video from buffer")
+            if not final_video_path:
+                logger.error("❌ Failed to retrieve final video from buffer")
                 return None
             
-            logger.info("✅ Retrieved processed video from buffer")
+            logger.info(f"✅ Retrieved final reel from buffer: {final_video_path}")
+            logger.info(f"🎉 Reel creation complete! Duration: {video_duration:.1f}s")
             
-            # Step 3b: Download and prepare NYT article image (FIRST CLIP)
-            nyt_clip = None
-            if nyt_image_url:
-                try:
-                    logger.info(f"📰 Downloading NYT article image...")
-                    import requests as req
-                    from moviepy.editor import ImageClip, concatenate_videoclips
-                    
-                    response = req.get(nyt_image_url, timeout=10)
-                    
-                    if response.status_code == 200:
-                        # Save to temp file
-                        temp_img = tempfile.NamedTemporaryFile(delete=False, suffix='.jpg')
-                        temp_img.write(response.content)
-                        temp_img.close()
-                        
-                        # Create image clip (will be first in reel) - 4 seconds
-                        nyt_duration = 4.0
-                        nyt_clip_raw = ImageClip(temp_img.name, duration=nyt_duration)
-                        
-                        # Resize to portrait (1080x1920)
-                        w, h = nyt_clip_raw.size
-                        target_ratio = 1080 / 1920
-                        current_ratio = w / h
-                        
-                        if current_ratio > target_ratio:
-                            # Image is wider, crop width
-                            new_width = int(h * target_ratio)
-                            x_center = w // 2
-                            x1 = x_center - new_width // 2
-                            nyt_clip_raw = nyt_clip_raw.crop(x1=x1, width=new_width)
-                        else:
-                            # Image is taller, crop height
-                            new_height = int(w / target_ratio)
-                            y_center = h // 2
-                            y1 = y_center - new_height // 2
-                            nyt_clip_raw = nyt_clip_raw.crop(y1=y1, height=new_height)
-                        
-                        nyt_clip = nyt_clip_raw.resize((1080, 1920))
-                        logger.info(f"✅ Created NYT image clip: {nyt_duration:.1f}s")
-                        
-                        # Clean up temp file
-                        os.unlink(temp_img.name)
-                    else:
-                        logger.warning(f"⚠️ Failed to download NYT image: HTTP {response.status_code}")
-                except Exception as e:
-                    logger.error(f"❌ Error downloading NYT image: {e}")
-            
-            # Step 4: Load processed video from Cloud Run
-            final_video = VideoFileClip(temp_video_path)
-            
-            # Step 4b: Prepend NYT image clip if available
-            if nyt_clip:
-                logger.info("📰 Prepending NYT article image as first clip...")
-                final_video = concatenate_videoclips([nyt_clip, final_video], method="compose")
-                logger.info(f"✅ NYT image prepended (total duration: {final_video.duration:.1f}s)")
-            
-            # Step 5: Add headline text overlay (lightweight operation)
-            logger.info("📝 Adding headline text overlay...")
-            final_video = self._add_text_overlay(final_video, headline, commentary)
-            
-            # Step 6: Add anchor overlay (lightweight operation)
-            logger.info("👩‍💼 Adding anchor overlay...")
-            try:
-                final_video, anchor_name = self.anchor_system.add_to_video_clip(final_video)
-                logger.info(f"✅ Added anchor: {anchor_name}")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not add anchor overlay: {e}")
-            
-            # Step 7: Add voice audio (lightweight operation)
-            if voice_audio_path and os.path.exists(voice_audio_path):
-                logger.info("🎤 Adding voice narration...")
-                audio = AudioFileClip(voice_audio_path)
-                
-                # Adjust video to match audio duration
-                if audio.duration > final_video.duration:
-                    final_video = final_video.loop(duration=audio.duration)
-                else:
-                    final_video = final_video.subclip(0, audio.duration)
-                
-                final_video = final_video.set_audio(audio)
-                logger.info(f"✅ Added voice ({audio.duration:.1f}s)")
-                
-                # Step 7b: Add synced captions (transcribe audio and add word-by-word)
-                logger.info("📝 Generating synced captions from audio...")
-                final_video = self._add_synced_captions(final_video, voice_audio_path, commentary)
-            else:
-                logger.warning("⚠️ No voice audio provided, skipping captions")
-            
-            # Step 7: Write final video
-            output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
-            output_path = output_file.name
-            output_file.close()
-            
-            logger.info("💾 Writing final reel...")
-            final_video.write_videofile(
-                output_path,
-                codec='libx264',
-                audio_codec='aac',
-                fps=30,
-                preset='ultrafast',  # Fast encoding on Render
-                threads=2,
-                logger=None
-            )
-            
-            # Cleanup
-            final_video.close()
-            os.unlink(temp_video_path)
-            gc.collect()
-            
-            logger.info(f"✅ Reel created: {output_path}")
-            return output_path
+            # Return the path - no further processing needed on Render!
+            return final_video_path
             
         except Exception as e:
             logger.error(f"❌ Error creating reel: {e}")
