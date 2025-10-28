@@ -5,12 +5,20 @@ PROJECT_ID="nukkad-foods"
 SERVICE_NAME="video-processor"
 REGION="asia-south1"  # Mumbai for better latency
 
-# CockroachDB connection string
-COCKROACHDB_URI="postgresql://snap:zY7iXb69bunWURtTeASzhg@backinsta-17456.j77.aws-ap-south-1.cockroachlabs.cloud:26257/defaultdb?sslmode=verify-full"
+# Load environment variables from parent .env file
+PARENT_DIR="$(dirname "$(pwd)")"
+ENV_FILE="$PARENT_DIR/.env"
+
+if [ -f "$ENV_FILE" ]; then
+    echo "📝 Loading environment variables from $ENV_FILE..."
+    export $(grep -v '^#' "$ENV_FILE" | xargs)
+else
+    echo "⚠️  Warning: .env file not found at $ENV_FILE"
+fi
 
 echo "🚀 Deploying Video Processor to Google Cloud Run (Mumbai)..."
 
-# Build and deploy (will auto-detect main.py)
+# Build and deploy with all required environment variables
 gcloud run deploy $SERVICE_NAME \
   --source . \
   --platform managed \
@@ -20,7 +28,7 @@ gcloud run deploy $SERVICE_NAME \
   --cpu 2 \
   --timeout 600 \
   --allow-unauthenticated \
-  --set-env-vars COCKROACHDB_URI="$COCKROACHDB_URI"
+  --set-env-vars "COCKROACHDB_URI=$COCKROACHDB_URI,GROQ_API_KEY=$GROQ_API_KEY,PEXEL=$PEXEL,NYT_API_KEY=$NYT_API_KEY,GOOGLE_API_KEY=$GOOGLE_API_KEY"
 
 echo ""
 echo "✅ Deployment complete!"
