@@ -12,6 +12,12 @@ import logging
 import requests
 from datetime import datetime
 import psycopg2
+from dotenv import load_dotenv
+
+# Load environment variables from parent QPost directory
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+env_path = os.path.join(parent_dir, '.env')
+load_dotenv(env_path)
 
 # FIX: Pillow 10.0+ compatibility - patch BEFORE importing MoviePy
 try:

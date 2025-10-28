@@ -5,11 +5,11 @@ Migrate CockroachDB tables to support chunking
 import os
 import sys
 import psycopg2
-
-# Load environment from backinsta .env
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'backinsta'))
 from dotenv import load_dotenv
-env_path = os.path.join(os.path.dirname(__file__), '..', 'backinsta', '.env')
+
+# Load environment from parent QPost directory
+parent_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+env_path = os.path.join(parent_dir, '.env')
 load_dotenv(env_path)
 
 def migrate_tables():

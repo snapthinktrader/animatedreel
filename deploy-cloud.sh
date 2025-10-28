@@ -16,7 +16,7 @@ gcloud run deploy $SERVICE_NAME \
   --platform managed \
   --region $REGION \
   --project $PROJECT_ID \
-  --memory 2Gi \
+  --memory 4Gi \
   --cpu 2 \
   --timeout 600 \
   --allow-unauthenticated \

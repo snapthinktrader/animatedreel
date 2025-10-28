@@ -270,6 +270,81 @@ class CockroachBufferStorage:
             logger.error(f"❌ Failed to retrieve clip from buffer: {e}")
             return None
     
+    def retrieve_processed_video(self, video_id: str) -> Optional[str]:
+        """
+        Retrieve processed video from Cloud Run stored in CockroachDB
+        
+        Args:
+            video_id: UUID of the processed video
+            
+        Returns:
+            Path to temporary file or None if failed
+        """
+        try:
+            cursor = self.conn.cursor()
+            # Check if chunked
+            cursor.execute("""
+                SELECT is_chunked, file_size_mb, total_chunks
+                FROM processed_videos
+                WHERE id::text = %s
+            """, (str(video_id),))
+            
+            row = cursor.fetchone()
+            
+            if not row:
+                cursor.close()
+                logger.error(f"❌ Processed video not found: {video_id}")
+                return None
+            
+            is_chunked, file_size_mb, total_chunks = row
+            
+            if is_chunked:
+                # Retrieve and reassemble chunks
+                cursor.execute("""
+                    SELECT chunk_data
+                    FROM processed_video_chunks
+                    WHERE video_id::text = %s
+                    ORDER BY chunk_number
+                """, (str(video_id),))
+                
+                chunks = [bytes(row[0]) for row in cursor.fetchall()]
+                cursor.close()
+                
+                if len(chunks) != total_chunks:
+                    logger.error(f"❌ Missing chunks: expected {total_chunks}, got {len(chunks)}")
+                    return None
+                
+                video_data = b''.join(chunks)
+                logger.info(f"📥 Retrieved processed video (CHUNKED): {file_size_mb:.2f} MB from {total_chunks} chunks")
+            else:
+                # Retrieve normally
+                cursor.execute("""
+                    SELECT video_data
+                    FROM processed_videos
+                    WHERE id::text = %s
+                """, (str(video_id),))
+                
+                row = cursor.fetchone()
+                cursor.close()
+                
+                if not row:
+                    logger.error(f"❌ Processed video data not found: {video_id}")
+                    return None
+                
+                video_data = bytes(row[0])
+                logger.info(f"📥 Retrieved processed video: {file_size_mb:.2f} MB")
+            
+            # Save to temp file
+            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
+            temp_file.write(video_data)
+            temp_file.close()
+            
+            return temp_file.name
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to retrieve processed video: {e}")
+            return None
+    
     def delete_clip(self, clip_id: str):
         """Delete a single clip from buffer (including chunks if chunked)"""
         try:

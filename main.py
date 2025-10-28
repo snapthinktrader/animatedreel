@@ -8,6 +8,8 @@ from flask import Flask, request, jsonify
 import tempfile
 import os
 import gc
+import uuid
+from decimal import Decimal
 from moviepy.editor import VideoFileClip, ImageClip, concatenate_videoclips
 import requests
 import logging
@@ -27,7 +29,101 @@ def get_db_connection():
     db_url = os.environ.get('COCKROACHDB_URI')
     if not db_url:
         raise ValueError("COCKROACHDB_URI not set")
+    
+    # Replace sslmode=verify-full with sslmode=require for Cloud Run
+    # Cloud Run doesn't have local cert files, but sslmode=require still encrypts
+    db_url = db_url.replace('sslmode=verify-full', 'sslmode=require')
+    
+    # Ensure SSL mode is set if not present
+    if '?' in db_url:
+        if 'sslmode' not in db_url:
+            db_url += '&sslmode=require'
+    else:
+        db_url += '?sslmode=require'
+    
     return psycopg2.connect(db_url)
+
+def retrieve_clip_from_buffer(clip_id: str) -> str:
+    """
+    Retrieve clip from CockroachDB buffer and save to temp file
+    
+    Args:
+        clip_id: Clip UUID from buffer
+        
+    Returns:
+        Path to temp file, or None if failed
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get clip metadata from temp_clips (matches CockroachBufferStorage schema)
+        cursor.execute("""
+            SELECT media_type, is_chunked, total_chunks, file_size_mb
+            FROM temp_clips
+            WHERE id = %s
+        """, (clip_id,))
+
+        row = cursor.fetchone()
+        if not row:
+            logger.error(f"❌ Clip {clip_id} not found in buffer (temp_clips)")
+            cursor.close()
+            conn.close()
+            return None
+
+        media_type, is_chunked, total_chunks, file_size_mb = row
+
+        # Retrieve chunks or direct data depending on is_chunked
+        clip_bytes = b''
+        if is_chunked:
+            cursor.execute("""
+                SELECT chunk_data
+                FROM temp_clip_chunks
+                WHERE clip_id = %s
+                ORDER BY chunk_number
+            """, (clip_id,))
+
+            chunk_rows = cursor.fetchall()
+            if not chunk_rows:
+                logger.error(f"❌ No chunks found for clip {clip_id} in temp_clip_chunks")
+                cursor.close()
+                conn.close()
+                return None
+
+            for chunk_row in chunk_rows:
+                clip_bytes += bytes(chunk_row[0])
+        else:
+            cursor.execute("""
+                SELECT clip_data
+                FROM temp_clips
+                WHERE id = %s
+            """, (clip_id,))
+
+            data_row = cursor.fetchone()
+            if not data_row or data_row[0] is None:
+                logger.error(f"❌ Clip data not found for {clip_id} in temp_clips")
+                cursor.close()
+                conn.close()
+                return None
+
+            clip_bytes = bytes(data_row[0])
+
+        # Combine bytes into temp file
+        suffix = '.mp4' if media_type == 'video' else '.jpg'
+        temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+        temp_file.write(clip_bytes)
+        
+        temp_file.close()
+        
+        cursor.close()
+        conn.close()
+        
+        logger.info(f"✅ Retrieved clip {clip_id} from buffer")
+        return temp_file.name
+        
+    except Exception as e:
+        logger.error(f"❌ Error retrieving clip from buffer: {e}")
+        return None
 
 @app.route('/', methods=['GET'])
 def health_check():
@@ -37,14 +133,13 @@ def health_check():
 @app.route('/process-clips', methods=['POST'])
 def process_clips():
     """
-    Process video clips: download, resize, concatenate, store in CockroachDB
+    Process video clips from CockroachDB buffer: retrieve, resize, concatenate
+    
+    NEW ARCHITECTURE: Clips are pre-downloaded to buffer by Render
     
     Request JSON:
     {
-        "clips": [
-            {"url": "https://...", "type": "video", "duration": 3.6},
-            {"url": "https://...", "type": "video", "duration": 3.6}
-        ],
+        "clip_ids": ["uuid-1", "uuid-2", "uuid-3"],  # Clip IDs from CockroachDB buffer
         "target_width": 1080,
         "target_height": 1920
     }
@@ -58,44 +153,41 @@ def process_clips():
     """
     try:
         data = request.json
-        clips_data = data.get('clips', [])
+        clip_ids = data.get('clip_ids', [])
         target_width = data.get('target_width', 1080)
         target_height = data.get('target_height', 1920)
         
-        if not clips_data:
-            return jsonify({'error': 'No clips provided'}), 400
+        if not clip_ids:
+            return jsonify({'error': 'No clip IDs provided'}), 400
         
-        logger.info(f"🎬 Processing {len(clips_data)} clips...")
+        logger.info(f"🎬 Processing {len(clip_ids)} clips from buffer...")
         
         # Process clips
         clips = []
+        temp_files = []
         
-        for i, clip_info in enumerate(clips_data):
-            url = clip_info['url']
-            media_type = clip_info['type']
-            duration = clip_info.get('duration', 3.0)
-            
+        for i, clip_id in enumerate(clip_ids):
             try:
-                # Download clip
-                logger.info(f"📥 Downloading clip {i+1}...")
-                response = requests.get(url, timeout=30)
+                # Retrieve clip from CockroachDB buffer
+                logger.info(f"📥 Retrieving clip {i+1} from buffer (ID: {clip_id})...")
                 
-                if response.status_code != 200:
-                    logger.warning(f"⚠️ Failed to download clip {i+1}")
+                clip_path = retrieve_clip_from_buffer(clip_id)
+                
+                if not clip_path:
+                    logger.warning(f"⚠️ Failed to retrieve clip {i+1} from buffer")
                     continue
                 
-                # Save to temp file
-                suffix = '.mp4' if media_type == 'video' else '.jpg'
-                temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-                temp_file.write(response.content)
-                temp_file.close()
+                temp_files.append(clip_path)
+                
+                # Determine media type from file extension
+                media_type = 'video' if clip_path.endswith('.mp4') else 'photo'
                 
                 # Process clip
                 if media_type == 'video':
-                    video_clip = VideoFileClip(temp_file.name)
+                    video_clip = VideoFileClip(clip_path)
                     
-                    # Trim to duration
-                    video_duration = min(video_clip.duration, duration)
+                    # Trim to reasonable duration (max 5s per clip to reduce memory)
+                    video_duration = min(video_clip.duration, 5.0)
                     video_clip = video_clip.subclip(0, video_duration)
                     
                     # Resize to portrait
@@ -105,19 +197,17 @@ def process_clips():
                     logger.info(f"✅ Processed video clip {i+1}: {video_duration:.1f}s")
                 
                 else:  # photo
-                    img_clip = ImageClip(temp_file.name, duration=duration)
+                    # Photos should have duration metadata from buffer
+                    img_clip = ImageClip(clip_path, duration=3.0)
                     img_clip = resize_to_portrait(img_clip, target_width, target_height)
                     clips.append(img_clip)
-                    logger.info(f"✅ Processed photo clip {i+1}: {duration:.1f}s")
-                
-                # Clean up temp file
-                os.unlink(temp_file.name)
+                    logger.info(f"✅ Processed photo clip {i+1}: 3.0s")
                 
             except Exception as e:
                 logger.error(f"❌ Error processing clip {i+1}: {e}")
                 continue
             
-            # Force garbage collection
+            # Force garbage collection after each clip
             gc.collect()
         
         if not clips:
@@ -126,6 +216,13 @@ def process_clips():
         # Concatenate clips
         logger.info(f"🎬 Concatenating {len(clips)} clips...")
         final_video = concatenate_videoclips(clips, method="compose")
+        
+        # Clean up temp files immediately after concatenation
+        for temp_file in temp_files:
+            try:
+                os.unlink(temp_file)
+            except:
+                pass
         
         # Write to temp file
         output_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp4')
@@ -175,16 +272,17 @@ def process_clips():
 
 def store_in_cockroachdb(video_path, duration, file_size_mb):
     """Store processed video in CockroachDB with chunking support"""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
         # Read video file
         with open(video_path, 'rb') as f:
             video_data = f.read()
         
         chunk_size = 6 * 1024 * 1024  # 6 MB chunks (same as buffer system)
         
+        logger.info("📋 Ensuring tables exist...")
         # Create processed_videos table if not exists
         cursor.execute("""
             CREATE TABLE IF NOT EXISTS processed_videos (
@@ -209,20 +307,22 @@ def store_in_cockroachdb(video_path, duration, file_size_mb):
             )
         """)
         conn.commit()
+        logger.info("✅ Tables ready")
         
         # Check if chunking needed
         if file_size_mb > 8:
             # Use chunking
             total_chunks = (len(video_data) + chunk_size - 1) // chunk_size
             
-            # Create main entry
-            cursor.execute("""
-                INSERT INTO processed_videos (video_data, duration, file_size_mb, is_chunked, total_chunks)
-                VALUES (%s, %s, %s, TRUE, %s)
-                RETURNING id::text
-            """, (b'', duration, file_size_mb, total_chunks))
+            logger.info(f"💾 Chunking {file_size_mb:.2f} MB video into {total_chunks} chunks...")
             
-            video_id = cursor.fetchone()[0]
+            # Create main entry - use simple UUID generation  
+            video_id = str(uuid.uuid4())
+            
+            cursor.execute("""
+                INSERT INTO processed_videos (id, video_data, duration, file_size_mb, is_chunked, total_chunks)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (video_id, psycopg2.Binary(b''), Decimal(str(duration)), Decimal(str(file_size_mb)), True, total_chunks))
             conn.commit()
             
             # Store chunks
@@ -233,8 +333,8 @@ def store_in_cockroachdb(video_path, duration, file_size_mb):
                 
                 cursor.execute("""
                     INSERT INTO processed_video_chunks (video_id, chunk_number, chunk_data)
-                    VALUES (%s::uuid, %s, %s)
-                """, (video_id, i, chunk))
+                    VALUES (%s, %s, %s)
+                """, (video_id, i, psycopg2.Binary(chunk)))
                 conn.commit()
                 
                 logger.info(f"   💾 Stored chunk {i+1}/{total_chunks}")
@@ -242,13 +342,13 @@ def store_in_cockroachdb(video_path, duration, file_size_mb):
             logger.info(f"💾 Stored video in CockroachDB (CHUNKED): {file_size_mb:.2f} MB in {total_chunks} chunks")
         else:
             # Store directly
-            cursor.execute("""
-                INSERT INTO processed_videos (video_data, duration, file_size_mb, is_chunked, total_chunks)
-                VALUES (%s, %s, %s, FALSE, 1)
-                RETURNING id::text
-            """, (video_data, duration, file_size_mb))
+            video_id = str(uuid.uuid4())
             
-            video_id = cursor.fetchone()[0]
+            cursor.execute("""
+                INSERT INTO processed_videos (id, video_data, duration, file_size_mb, is_chunked, total_chunks)
+                VALUES (%s, %s, %s, %s, %s, %s)
+            """, (video_id, psycopg2.Binary(video_data), Decimal(str(duration)), Decimal(str(file_size_mb)), False, 1))
+            
             conn.commit()
             
             logger.info(f"💾 Stored video in CockroachDB: {file_size_mb:.2f} MB")
