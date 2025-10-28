@@ -604,6 +604,120 @@ def add_anchor_overlay(video_clip, target_width, target_height):
         logger.warning(f"⚠️ Failed to add anchor: {e}")
         return video_clip
 
+@app.route('/generate-reel-from-article', methods=['POST'])
+def generate_reel_from_article():
+    """
+    COMPLETE reel generation from NYT article (no client processing needed)
+    Steps:
+    1. Generate voice with Google TTS
+    2. Extract keywords and download Pexels clips to buffer
+    3. Create complete reel (clips + NYT image + text + captions + anchor + voice)
+    4. Store in CockroachDB processed_videos
+    5. Return video_id
+    """
+    try:
+        data = request.get_json()
+        headline = data.get('headline', '')
+        abstract = data.get('abstract', '')
+        commentary = data.get('commentary', '')
+        nyt_image_url = data.get('nyt_image_url')
+        article_url = data.get('article_url', '')
+        article_id = data.get('article_id', '')
+        clips_count = data.get('clips_count', 6)
+        
+        logger.info(f"🎬 COMPLETE reel generation for: {headline[:50]}...")
+        
+        # Step 1: Generate voice narration
+        logger.info("🎤 Generating voice narration...")
+        from google_tts_voice import GoogleTTSVoice
+        tts = GoogleTTSVoice()
+        
+        voice_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+        voice_file.close()
+        
+        voice_path = tts.generate_voice(
+            commentary,
+            voice_file.name,
+            voice_name="en-US-Studio-O"
+        )
+        
+        if not voice_path:
+            return jsonify({'error': 'Voice generation failed'}), 500
+        
+        logger.info("✅ Voice generated")
+        
+        # Step 2: Extract keywords and download Pexels clips
+        logger.info(f"📥 Fetching {clips_count} Pexels clips...")
+        from pexels_video_fetcher import PexelsMediaFetcher
+        import uuid
+        
+        pexels = PexelsMediaFetcher()
+        keywords = pexels.extract_search_keywords(headline, commentary)
+        
+        session_id = str(uuid.uuid4())
+        clip_ids = []
+        
+        for keyword in keywords[:3]:
+            videos = pexels.search_videos(keyword, per_page=3, orientation='portrait')
+            for video in videos:
+                clip_id = pexels.download_media(video['url'], 'video', session_id)
+                if clip_id:
+                    clip_ids.append(clip_id)
+                    if len(clip_ids) >= clips_count:
+                        break
+            if len(clip_ids) >= clips_count:
+                break
+        
+        if not clip_ids:
+            os.unlink(voice_path)
+            return jsonify({'error': 'Failed to download clips'}), 500
+        
+        logger.info(f"✅ Downloaded {len(clip_ids)} clips to buffer")
+        
+        # Step 3: Upload voice to buffer
+        with open(voice_path, 'rb') as f:
+            voice_data = f.read()
+        voice_id = pexels.buffer.store_clip(voice_data, 'audio', session_id)
+        os.unlink(voice_path)
+        
+        logger.info(f"✅ Voice uploaded to buffer (ID: {voice_id})")
+        
+        # Step 4: Call complete reel creation endpoint
+        logger.info("🎨 Creating complete reel with all features...")
+        
+        response = requests.post(
+            'http://localhost:8080/create-complete-reel',
+            json={
+                'clip_ids': clip_ids,
+                'headline': headline,
+                'commentary': commentary,
+                'voice_audio_id': voice_id,
+                'nyt_image_url': nyt_image_url,
+                'target_width': 1080,
+                'target_height': 1920
+            },
+            timeout=600
+        )
+        
+        if response.status_code != 200:
+            return jsonify({'error': 'Reel creation failed', 'details': response.text}), 500
+        
+        result = response.json()
+        
+        logger.info(f"✅ Complete reel generation finished: {result['duration']:.1f}s")
+        
+        return jsonify({
+            'video_id': result['video_id'],
+            'duration': result['duration'],
+            'file_size_mb': result['file_size_mb']
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error in article reel generation: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     port = int(os.environ.get('PORT', 8080))
     app.run(host='0.0.0.0', port=port)
