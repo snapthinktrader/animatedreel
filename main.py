@@ -749,18 +749,20 @@ def generate_reel_from_article():
             # Insert into reels table
             cursor.execute("""
                 INSERT INTO reels (
-                    headline, video_data, duration,
-                    article_url, article_id, status, created_at, file_size
-                ) VALUES (%s, %s, %s, %s, %s, %s, NOW(), %s)
+                    headline, caption, video_data, duration,
+                    article_url, article_id, status, created_at, file_size, ai_analysis
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
                 RETURNING id
             """, (
                 headline,
+                commentary,  # Use commentary as caption
                 psycopg2.Binary(video_data),
                 Decimal(str(duration)),
                 article_url,
                 article_id,
                 'pending',
-                Decimal(str(file_size_mb))
+                Decimal(str(file_size_mb)),
+                abstract  # Use abstract as ai_analysis
             ))
             
             reel_id = cursor.fetchone()[0]
